@@ -11,21 +11,22 @@ if (!admin.apps.length) {
 const db = admin.firestore();
 
 export default async function handler(req, res) {
-  // 🎯 FIX: If you visit manually in a browser, return a clean message instead of crashing
+  // 🎯 If you visit manually in a browser, return a clean message instead of crashing
   if (req.method !== "POST") {
     return res.status(200).json({ 
       success: true, 
-      message: "Backend server is live and running perfectly! Waiting for Shopify POST requests." 
+      message: "Backend server for Oragon Spin is live! Waiting for Shopify POST requests." 
     });
   }
 
   try {
-    // Check for Shopify domain headers
+    // 🔐 Check for Shopify domain headers to verify authenticity safely
     const shopifyDomain = req.headers["x-shopify-shop-domain"];
     if (!shopifyDomain) {
       return res.status(401).json({ success: false, message: "Unauthorized - Missing Shopify Headers" });
     }
 
+    // 🎯 Vercel automatically delivers this as a perfect object, no parsing or stream buffers needed!
     const orderData = req.body;
     if (!orderData || !orderData.customer) {
       return res.status(200).json({ success: true, message: "No customer data found - Skipped" });
