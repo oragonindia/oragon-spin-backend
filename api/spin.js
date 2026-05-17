@@ -1,6 +1,4 @@
 export default async function handler(req, res) {
-
-  // CORS
   res.setHeader("Access-Control-Allow-Origin", "*");
   res.setHeader("Access-Control-Allow-Methods", "POST, OPTIONS");
   res.setHeader("Access-Control-Allow-Headers", "Content-Type");
@@ -10,117 +8,106 @@ export default async function handler(req, res) {
   }
 
   if (req.method !== "POST") {
-    return res.status(405).json({
-      success: false,
-      message: "Only POST allowed"
-    });
+    return res.status(405).json({ success: false, message: "Only POST allowed" });
   }
 
   const { customerId } = req.body || {};
 
   if (!customerId) {
-    return res.status(400).json({
-      success: false,
-      message: "No customer ID"
-    });
+    return res.status(400).json({ success: false, message: "No customer ID" });
   }
 
-  // 🎯 PRIZES
-  const prizes = [
-    "SAVE10",
-    "SHIPFREE",
-    "SAVE20",
-    null
+  // 🎯 RANDOM PRIZE LOGIC
+  const discounts = [
+    { type: "percentage", value: 10 },
+    { type: "percentage", value: 20 },
+    { type: "free_shipping" },
+    { type: "none" }
   ];
 
-  const code = prizes[Math.floor(Math.random() * prizes.length)];
+  const prize = discounts[Math.floor(Math.random() * discounts.length)];
 
-  // ❌ nothing won
-  if (!code) {
-    return res.status(200).json({
+  if (prize.type === "none") {
+    return res.json({
       success: true,
       code: null,
       message: "Try again"
     });
   }
 
+  // 🔥 Generate UNIQUE coupon code
+  const code =
+    "WIN-" +
+    customerId.slice(-4) +
+    "-" +
+    Math.random().toString(36).substring(2, 6).toUpperCase();
+
+  // Shopify Admin API
+  const SHOP = process.env.SHOPIFY_STORE;
+  const TOKEN = process.env.SHOPIFY_ADMIN_TOKEN;
+
+  const url = `https://${SHOP}/admin/api/2026-01/discount_codes.json`;
+
+  let discountPayload = {};
+
+  if (prize.type === "percentage") {
+    discountPayload = {
+      price_rule: {
+        title: "Spin Discount",
+        target_type: "line_item",
+        target_selection: "all",
+        allocation_method: "across",
+        value_type: "percentage",
+        value: `-${prize.value}`,
+        customer_selection: "prerequisite",
+        usage_limit: 1
+      },
+      discount_code: {
+        code
+      }
+    };
+  }
+
+  if (prize.type === "free_shipping") {
+    discountPayload = {
+      price_rule: {
+        title: "Spin Free Shipping",
+        target_type: "shipping_line",
+        target_selection: "all",
+        allocation_method: "across",
+        value_type: "percentage",
+        value: "-100",
+        customer_selection: "all",
+        usage_limit: 1
+      },
+      discount_code: {
+        code
+      }
+    };
+  }
+
   try {
-    const SHOPIFY_STORE = "oragon-2901.myshopify.com";
-    const TOKEN = process.env.SHOPIFY_ADMIN_API_ACCESS_TOKEN;
+    const response = await fetch(url, {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        "X-Shopify-Access-Token": TOKEN
+      },
+      body: JSON.stringify(discountPayload)
+    });
 
-    if (!TOKEN) {
-      return res.status(500).json({
-        success: false,
-        message: "Missing Shopify token in Vercel env"
-      });
-    }
+    const data = await response.json();
 
-    // 🧠 STEP 1: CREATE PRICE RULE
-    const priceRuleRes = await fetch(
-      `https://${SHOPIFY_STORE}/admin/api/2024-10/price_rules.json`,
-      {
-        method: "POST",
-        headers: {
-          "Content-Type": "application/json",
-          "X-Shopify-Access-Token": TOKEN
-        },
-        body: JSON.stringify({
-          price_rule: {
-            title: code,
-            target_type: "line_item",
-            target_selection: "all",
-            allocation_method: "across",
-            value_type: "percentage",
-            value: "-10.0",
-            customer_selection: "all",
-            starts_at: new Date().toISOString()
-          }
-        })
-      }
-    );
-
-    const priceRuleData = await priceRuleRes.json();
-
-    if (!priceRuleData.price_rule?.id) {
-      return res.status(500).json({
-        success: false,
-        message: "Failed to create price rule",
-        error: priceRuleData
-      });
-    }
-
-    const ruleId = priceRuleData.price_rule.id;
-
-    // 🧠 STEP 2: CREATE DISCOUNT CODE
-    const discountRes = await fetch(
-      `https://${SHOPIFY_STORE}/admin/api/2024-10/price_rules/${ruleId}/discount_codes.json`,
-      {
-        method: "POST",
-        headers: {
-          "Content-Type": "application/json",
-          "X-Shopify-Access-Token": TOKEN
-        },
-        body: JSON.stringify({
-          discount_code: {
-            code: code
-          }
-        })
-      }
-    );
-
-    const discountData = await discountRes.json();
-
-    return res.status(200).json({
+    return res.json({
       success: true,
-      code: code,
-      shopify: discountData
+      code,
+      shopify: data
     });
 
   } catch (err) {
     return res.status(500).json({
       success: false,
-      message: "Server error",
-      error: err.message
+      message: err.message
     });
   }
 }
