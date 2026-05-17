@@ -1,42 +1,45 @@
-import { initializeApp, getApps, credential } from "firebase-admin/app";
-import { getFirestore } from "firebase-admin/firestore";
+import admin from "firebase-admin";
 import crypto from "crypto";
 
-if (!getApps().length) {
-  initializeApp({
-    // Make sure your Firebase Service Account JSON variable is added in Vercel env
-    credential: credential.cert(JSON.parse(Buffer.from(process.env.FIREBASE_SERVICE_ACCOUNT_JSON, 'base64').toString()))
+// 🔐 Initialize Firebase Admin safely using backend credentials
+if (!admin.apps.length) {
+  admin.initializeApp({
+    credential: admin.credential.cert(
+      JSON.parse(Buffer.from(process.env.FIREBASE_SERVICE_ACCOUNT_JSON, 'base64').toString())
+    )
   });
 }
-const db = getFirestore();
+const db = admin.firestore();
 
 export default async function handler(req, res) {
+  // Only allow secure POST requests from Shopify
   if (req.method !== "POST") return res.status(405).end();
 
   const hmac = req.headers["x-shopify-hmac-sha256"];
   const secret = process.env.SHOPIFY_WEBHOOK_SECRET;
   
-  // Compute the hash validation
+  // Read the raw body stream for secure cryptographic signature validation
   const rawBody = await Buffer.from(req.body);
   const hash = crypto
     .createHmac("sha256", secret)
     .update(rawBody)
     .digest("base64");
 
+  // Security Check: Deny requests if the Shopify signature doesn't match
   if (hash !== hmac) {
     return res.status(401).json({ success: false, message: "Unauthorized" });
   }
 
   try {
-    // Parse JSON data safely from the verified stream buffer
     const orderData = JSON.parse(rawBody.toString('utf8'));
     const rawCustomerId = orderData.customer?.id;
 
+    // Skip if it's a guest checkout with no registered customer account
     if (!rawCustomerId) {
       return res.status(200).json({ success: true, message: "Guest Checkout - Skipped" });
     }
 
-    // 🔥 CRITICAL FIX: Extract ONLY the numbers so it matches your frontend variable exactly!
+    // 🎯 CRITICAL FIX: Extract raw numeric digits to perfectly match your frontend IDs
     const cleanCustomerId = String(rawCustomerId).replace(/\D/g, "");
 
     const userRef = db.collection("spinUsers").doc(cleanCustomerId);
@@ -44,8 +47,10 @@ export default async function handler(req, res) {
 
     if (userDoc.exists) {
       const currentBalance = userDoc.data().spinBalance || 0;
+      // Add +1 spin balance to returning buyer
       await userRef.update({ spinBalance: currentBalance + 1 });
     } else {
+      // Create user entry with 1 balance if somehow missing from the pool
       await userRef.set({ spinBalance: 1 });
     }
 
@@ -56,7 +61,7 @@ export default async function handler(req, res) {
   }
 }
 
-// Turn off body parsing so we can read the raw cryptographic stream cleanly
+// Disable body parsing so the raw cryptographic buffer can be validated properly
 export const config = {
   api: {
     bodyParser: false,
