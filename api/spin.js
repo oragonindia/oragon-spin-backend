@@ -3,9 +3,7 @@ export default async function handler(req, res) {
   res.setHeader("Access-Control-Allow-Methods", "POST, OPTIONS");
   res.setHeader("Access-Control-Allow-Headers", "Content-Type");
 
-  if (req.method === "OPTIONS") {
-    return res.status(200).end();
-  }
+  if (req.method === "OPTIONS") return res.status(200).end();
 
   if (req.method !== "POST") {
     return res.status(405).json({ success: false, message: "Only POST allowed" });
@@ -14,132 +12,122 @@ export default async function handler(req, res) {
   const { customerId } = req.body || {};
 
   if (!customerId) {
-    return res.status(400).json({ success: false, message: "No customer ID" });
+    return res.status(400).json({ success: false, message: "Missing customerId" });
   }
 
-  // 🎯 RANDOM PRIZE LOGIC
-  const discounts = [
-    { type: "percentage", value: 10 },
-    { type: "percentage", value: 20 },
-    { type: "free_shipping" },
-    { type: "none" }
+  // 🎯 RANDOM PRIZE CONFIGURATION
+  const prizes = [
+    { type: "percentage", baseCode: "SAVE10", value: 10 },
+    { type: "percentage", baseCode: "SAVE20", value: 20 },
+    { type: "free_shipping", baseCode: "SHIPFREE", value: 100 },
+    { type: "none", baseCode: null, value: 0 }
   ];
 
-  const prize = discounts[Math.floor(Math.random() * discounts.length)];
+  const prize = prizes[Math.floor(Math.random() * prizes.length)];
 
-  if (prize.type === "none") {
-    return res.json({
+  if (!prize.baseCode) {
+    return res.status(200).json({
       success: true,
       code: null,
       message: "Try again"
     });
   }
 
-  // 🔥 Generate UNIQUE coupon code string safely
-  const shortId = typeof customerId === 'string' ? customerId.slice(-4) : "USER";
-  const code =
-    "WIN-" +
-    shortId +
-    "-" +
-    Math.random().toString(36).substring(2, 6).toUpperCase();
+  // 🔥 GENERATE TOTALLY UNIQUE CODE (e.g., SAVE10-4829-X72R)
+  // Cleans the customerId to just numerical digits to fit Shopify API requirements
+  const cleanCustomerId = String(customerId).replace(/\D/g, "");
+  const shortId = cleanCustomerId ? cleanCustomerId.slice(-4) : "USER";
+  const uniqueSuffix = Math.random().toString(36).substring(2, 6).toUpperCase();
+  const uniqueDiscountCode = `${prize.baseCode}-${shortId}-${uniqueSuffix}`;
 
-  // Shopify Admin API Configuration
-  const SHOP = process.env.SHOPIFY_STORE; // e.g., "your-store.myshopify.com"
-  
-  // 💡 Fixed: Matches the secret environment key name you created in Vercel
-  const TOKEN = process.env.SHOPIFY_ADMIN_API_ACCESS_TOKEN; 
+  try {
+    const SHOPIFY_STORE = "oragon-2901.myshopify.com";
+    const ADMIN_TOKEN = process.env.SHOPIFY_ADMIN_API_ACCESS_TOKEN;
 
-  const API_VERSION = "2026-01";
-  const baseHeaders = {
-    "Content-Type": "application/json",
-    "X-Shopify-Access-Token": TOKEN
-  };
+    const baseHeaders = {
+      "Content-Type": "application/json",
+      "X-Shopify-Access-Token": ADMIN_TOKEN
+    };
 
-  // Build the correct distinct price rule payload structure Shopify expects
-  let priceRulePayload = { price_rule: {} };
-
-  if (prize.type === "percentage") {
-    priceRulePayload.price_rule = {
-      title: `Spin ${prize.value}% Discount`,
-      target_type: "line_item",
+    // Prepare custom rules payload configurations
+    let priceRulePayload = {
+      title: `SPIN_${uniqueDiscountCode}`,
       target_selection: "all",
       allocation_method: "across",
       value_type: "percentage",
       value: `-${prize.value}.0`,
-      customer_selection: "all",
-      usage_limit: 1,
-      starts_at: new Date().toISOString()
+      usage_limit: 1, // 🔐 Restricts code strictly to a single execution use globally
+      starts_at: new Date().toISOString(),
+      
+      // 🔐 CUSTOMER LOCKDOWN SELECTION MECHANICS
+      customer_selection: "prerequisite",
+      prerequisite_customer_ids: [parseInt(cleanCustomerId, 10)] 
     };
-  } else if (prize.type === "free_shipping") {
-    priceRulePayload.price_rule = {
-      title: "Spin Free Shipping",
-      target_type: "shipping_line",
-      target_selection: "all",
-      allocation_method: "across",
-      value_type: "percentage",
-      value: "-100.0",
-      customer_selection: "all",
-      usage_limit: 1,
-      starts_at: new Date().toISOString()
-    };
-  }
 
-  try {
-    // STEP 1: Post to the Price Rules collection endpoint
-    const priceRuleUrl = `https://${SHOP}/admin/api/${API_VERSION}/price_rules.json`;
-    const ruleResponse = await fetch(priceRuleUrl, {
-      method: "POST",
-      headers: baseHeaders,
-      body: JSON.stringify(priceRulePayload)
-    });
+    // Explicit adjustments for Free Shipping target rules
+    if (prize.type === "free_shipping") {
+      priceRulePayload.target_type = "shipping_line";
+    } else {
+      priceRulePayload.target_type = "line_item";
+    }
+
+    // STEP 1: Post Price Rule Configuration Group
+    const ruleResponse = await fetch(
+      `https://${SHOPIFY_STORE}/admin/api/2026-04/price_rules.json`,
+      {
+        method: "POST",
+        headers: baseHeaders,
+        body: JSON.stringify({ price_rule: priceRulePayload })
+      }
+    );
 
     const ruleData = await ruleResponse.json();
 
     if (!ruleResponse.ok || !ruleData.price_rule) {
       return res.status(ruleResponse.status).json({
         success: false,
-        message: "Failed to create Shopify Price Rule",
+        message: "Shopify Price Rule Creation Failed",
         details: ruleData
       });
     }
 
     const priceRuleId = ruleData.price_rule.id;
 
-    // STEP 2: Use the newly returned ID to create the actual code string inside that rule
-    const discountCodeUrl = `https://${SHOP}/admin/api/${API_VERSION}/price_rules/${priceRuleId}/discount_codes.json`;
-    const codePayload = {
-      discount_code: {
-        code: code
+    // STEP 2: Bind the Unique Code String to the Generated Price Rule ID
+    const codeResponse = await fetch(
+      `https://${SHOPIFY_STORE}/admin/api/2026-04/price_rules/${priceRuleId}/discount_codes.json`,
+      {
+        method: "POST",
+        headers: baseHeaders,
+        body: JSON.stringify({
+          discount_code: {
+            code: uniqueDiscountCode
+          }
+        })
       }
-    };
-
-    const codeResponse = await fetch(discountCodeUrl, {
-      method: "POST",
-      headers: baseHeaders,
-      body: JSON.stringify(codePayload)
-    });
+    );
 
     const codeData = await codeResponse.json();
 
     if (!codeResponse.ok) {
       return res.status(codeResponse.status).json({
         success: false,
-        message: "Failed to create Shopify Discount Code string",
+        message: "Shopify Discount Code Association Failed",
         details: codeData
       });
     }
 
-    // Success! Return the code string to your frontend wheel component
-    return res.json({
+    // Return the newly registered unique code value back to your frontend wheel UI
+    return res.status(200).json({
       success: true,
-      code: code,
-      prizeInfo: prize
+      code: uniqueDiscountCode
     });
 
   } catch (err) {
+    console.error(err);
     return res.status(500).json({
       success: false,
-      message: err.message
+      message: "Shopify API connection error exception caught"
     });
   }
 }
