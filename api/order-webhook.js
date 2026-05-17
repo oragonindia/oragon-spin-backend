@@ -11,26 +11,36 @@ if (!admin.apps.length) {
 }
 const db = admin.firestore();
 
+// Helper function to safely read the raw request stream from Shopify
+async function getRawBody(readable) {
+  const chunks = [];
+  for await (const chunk of readable) {
+    chunks.push(typeof chunk === "string" ? Buffer.from(chunk) : chunk);
+  }
+  return Buffer.concat(chunks);
+}
+
 export default async function handler(req, res) {
   // Only allow secure POST requests from Shopify
   if (req.method !== "POST") return res.status(405).end();
 
-  const hmac = req.headers["x-shopify-hmac-sha256"];
-  const secret = process.env.SHOPIFY_WEBHOOK_SECRET;
-  
-  // Read the raw body stream for secure cryptographic signature validation
-  const rawBody = await Buffer.from(req.body);
-  const hash = crypto
-    .createHmac("sha256", secret)
-    .update(rawBody)
-    .digest("base64");
-
-  // Security Check: Deny requests if the Shopify signature doesn't match
-  if (hash !== hmac) {
-    return res.status(401).json({ success: false, message: "Unauthorized" });
-  }
-
   try {
+    const hmac = req.headers["x-shopify-hmac-sha256"];
+    const secret = process.env.SHOPIFY_WEBHOOK_SECRET;
+    
+    // 🎯 FIX: Read the incoming stream into a valid raw Buffer
+    const rawBody = await getRawBody(req);
+    
+    const hash = crypto
+      .createHmac("sha256", secret)
+      .update(rawBody)
+      .digest("base64");
+
+    // Security Check: Deny requests if the Shopify signature doesn't match
+    if (hash !== hmac) {
+      return res.status(401).json({ success: false, message: "Unauthorized" });
+    }
+
     const orderData = JSON.parse(rawBody.toString('utf8'));
     const rawCustomerId = orderData.customer?.id;
 
@@ -39,7 +49,7 @@ export default async function handler(req, res) {
       return res.status(200).json({ success: true, message: "Guest Checkout - Skipped" });
     }
 
-    // 🎯 CRITICAL FIX: Extract raw numeric digits to perfectly match your frontend IDs
+    // Extract raw numeric digits to perfectly match your frontend IDs
     const cleanCustomerId = String(rawCustomerId).replace(/\D/g, "");
 
     const userRef = db.collection("spinUsers").doc(cleanCustomerId);
