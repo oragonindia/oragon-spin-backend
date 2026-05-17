@@ -1,13 +1,29 @@
 import admin from "firebase-admin";
 
-// 🔐 Initialize Firebase Admin safely using backend credentials
+// 🔐 Smart Initialization: Autodetects if your Vercel variable is Base64 or Raw JSON
 if (!admin.apps.length) {
+  let serviceAccount;
+  const rawEnv = process.env.FIREBASE_SERVICE_ACCOUNT_JSON;
+
+  try {
+    // Attempt A: If it's already a clean, plain JSON string in Vercel
+    serviceAccount = JSON.parse(rawEnv);
+  } catch (e) {
+    try {
+      // Attempt B: If it's encoded in Base64 format, decode it first
+      const decoded = Buffer.from(rawEnv, 'base64').toString('utf8');
+      serviceAccount = JSON.parse(decoded);
+    } catch (base64Error) {
+      console.error("Firebase Service Account Parsing Failed completely. Check Vercel Environment Variables.");
+      throw new Error("Invalid Firebase Credentials Format");
+    }
+  }
+
   admin.initializeApp({
-    credential: admin.credential.cert(
-      JSON.parse(Buffer.from(process.env.FIREBASE_SERVICE_ACCOUNT_JSON, 'base64').toString())
-    )
+    credential: admin.credential.cert(serviceAccount)
   });
 }
+
 const db = admin.firestore();
 
 export default async function handler(req, res) {
@@ -26,7 +42,7 @@ export default async function handler(req, res) {
       return res.status(401).json({ success: false, message: "Unauthorized - Missing Shopify Headers" });
     }
 
-    // 🎯 Vercel automatically delivers this as a perfect object, no parsing or stream buffers needed!
+    // Vercel automatically delivers this as a perfect object, no parsing or streams needed
     const orderData = req.body;
     if (!orderData || !orderData.customer) {
       return res.status(200).json({ success: true, message: "No customer data found - Skipped" });
