@@ -33,8 +33,7 @@ export default async function handler(req, res) {
     });
   }
 
-  // 🔥 GENERATE TOTALLY UNIQUE CODE (e.g., SAVE10-4829-X72R)
-  // Cleans the customerId to just numerical digits to fit Shopify API requirements
+  // 🔥 GENERATE TOTALLY UNIQUE CODE (e.g., SHIPFREE-4829-X72R)
   const cleanCustomerId = String(customerId).replace(/\D/g, "");
   const shortId = cleanCustomerId ? cleanCustomerId.slice(-4) : "USER";
   const uniqueSuffix = Math.random().toString(36).substring(2, 6).toUpperCase();
@@ -49,26 +48,27 @@ export default async function handler(req, res) {
       "X-Shopify-Access-Token": ADMIN_TOKEN
     };
 
-    // Prepare custom rules payload configurations
+    // Base price rule template
     let priceRulePayload = {
       title: `SPIN_${uniqueDiscountCode}`,
       target_selection: "all",
-      allocation_method: "across",
-      value_type: "percentage",
-      value: `-${prize.value}.0`,
-      usage_limit: 1, // 🔐 Restricts code strictly to a single execution use globally
+      usage_limit: 1, 
       starts_at: new Date().toISOString(),
-      
-      // 🔐 CUSTOMER LOCKDOWN SELECTION MECHANICS
       customer_selection: "prerequisite",
       prerequisite_customer_ids: [parseInt(cleanCustomerId, 10)] 
     };
 
-    // Explicit adjustments for Free Shipping target rules
+    // ⚡ CRITICAL FIX: Differentiate logic properties between standard discounts and shipping
     if (prize.type === "free_shipping") {
-      priceRulePayload.target_type = "shipping_line";
+      priceRulePayload.target_type = "shipping_line";      // Targets shipping charges
+      priceRulePayload.allocation_method = "each";        // Shopify requires "each" for shipping
+      priceRulePayload.value_type = "percentage";
+      priceRulePayload.value = "-100.0";                  // Must be exact decimal string format
     } else {
-      priceRulePayload.target_type = "line_item";
+      priceRulePayload.target_type = "line_item";         // Targets cart item lines
+      priceRulePayload.allocation_method = "across";      // Standard discount flow
+      priceRulePayload.value_type = "percentage";
+      priceRulePayload.value = `-${prize.value}.0`;       // Clean decimal conversion string
     }
 
     // STEP 1: Post Price Rule Configuration Group
@@ -117,7 +117,6 @@ export default async function handler(req, res) {
       });
     }
 
-    // Return the newly registered unique code value back to your frontend wheel UI
     return res.status(200).json({
       success: true,
       code: uniqueDiscountCode
