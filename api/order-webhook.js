@@ -1,5 +1,6 @@
 import admin from "firebase-admin";
 import crypto from "crypto";
+import { buffer } from "micro"; // 🎯 Bulletproof raw body parser for Vercel
 
 // 🔐 Initialize Firebase Admin safely using backend credentials
 if (!admin.apps.length) {
@@ -11,15 +12,6 @@ if (!admin.apps.length) {
 }
 const db = admin.firestore();
 
-// Helper function to safely read the raw request stream from Shopify
-async function getRawBody(readable) {
-  const chunks = [];
-  for await (const chunk of readable) {
-    chunks.push(typeof chunk === "string" ? Buffer.from(chunk) : chunk);
-  }
-  return Buffer.concat(chunks);
-}
-
 export default async function handler(req, res) {
   // Only allow secure POST requests from Shopify
   if (req.method !== "POST") return res.status(405).end();
@@ -28,8 +20,8 @@ export default async function handler(req, res) {
     const hmac = req.headers["x-shopify-hmac-sha256"];
     const secret = process.env.SHOPIFY_WEBHOOK_SECRET;
     
-    // 🎯 FIX: Read the incoming stream into a valid raw Buffer
-    const rawBody = await getRawBody(req);
+    // 🎯 FIX: Let micro read the raw body stream safely into a clean Buffer instance
+    const rawBody = await buffer(req);
     
     const hash = crypto
       .createHmac("sha256", secret)
@@ -71,7 +63,7 @@ export default async function handler(req, res) {
   }
 }
 
-// Disable body parsing so the raw cryptographic buffer can be validated properly
+// Disable body parsing so micro can handle the raw cryptographic stream properly
 export const config = {
   api: {
     bodyParser: false,
